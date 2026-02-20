@@ -1,0 +1,25 @@
+/* =============================================================================
+LAYER 1: BRONZE (RAW LANDING)
+- Create bronze schema
+- Create empty raw tables with the same columns as the source tables
+- Stored procedure to truncate + reload raw tables
+============================================================================= */
+
+CREATE SCHEMA bronze;
+
+-- Creates bronze.referrals_raw as a new table with the same column structure
+-- as "referrals", but no rows.
+-- "WHERE 1 = 0" is always false, so this copies ONLY the schema (column layout).
+
+SELECT *
+INTO bronze.referrals_raw
+FROM referrals
+WHERE 1 = 0;
+
+-- Same pattern: creates bronze.calc_deaths_raw with the same structure as Calc_Deaths,
+-- but inserts 0 rows.
+
+SELECT *
+INTO bronze.calc_deaths_raw
+FROM Calc_Deaths
+WHERE 1 = 0;
