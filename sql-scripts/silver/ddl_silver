@@ -1,0 +1,96 @@
+/* =============================================================================
+LAYER 3: SILVER (CLEAN + BUSINESS RULES + DERIVED METRICS)
+- Create silver schema and clean tables
+- Create procedure to load cleaned records from staging
+============================================================================= */
+
+CREATE SCHEMA IF NOT EXISTS silver;		-- Creates the silver schema if it does not exist.
+
+DROP TABLE IF EXISTS silver.referrals_clean;		-- Drops silver.referrals_clean if it exists 
+
+CREATE TABLE silver.referrals_clean (
+    -- Identifiers
+    patient_id               VARCHAR(100),
+    hospital_id              VARCHAR(100),
+    opo                      VARCHAR(100),
+
+    -- Age fields
+    age                      INT,
+    age_over_89_flag         BOOLEAN,
+    age_band                 VARCHAR(100),
+
+    -- Demographics
+    gender                   VARCHAR(50),
+    race                     VARCHAR(50),
+
+    -- Referral flags
+    tissue_referral          BOOLEAN,
+    eye_referral             BOOLEAN,
+
+    -- Cause of death fields (cleaned)
+    cause_of_death_opo       VARCHAR(200),
+    cause_of_death_unos      VARCHAR(200),
+    mechanism_of_death       VARCHAR(200),
+    circumstances_of_death   VARCHAR(200),
+
+    -- Blood type (cleaned)
+    abo_bloodtype            VARCHAR(50),
+    abo_rh                   VARCHAR(10),
+
+    -- Physical attributes
+    height_in                NUMERIC(10,2),
+    weight_kg                NUMERIC(10,2),
+    bmi                      NUMERIC(10,2),
+
+    -- Process flags
+    brain_death              BOOLEAN,
+    approached               BOOLEAN,
+    authorized               BOOLEAN,
+    procured                 BOOLEAN,
+    transplanted             BOOLEAN,
+
+    -- Timestamps
+    time_brain_death         TIMESTAMP,
+    time_asystole            TIMESTAMP,
+    time_referred            TIMESTAMP,
+    time_approached          TIMESTAMP,
+    time_authorized          TIMESTAMP,
+    time_procured            TIMESTAMP,
+
+    -- Time interval metrics (hours)
+    hours_to_approach        NUMERIC(10,2),
+    hours_to_authorization   NUMERIC(10,2),
+    hours_to_procurement     NUMERIC(10,2),
+
+    -- Year fields
+    referral_year            INT,
+    referral_day_of_week     VARCHAR(50),
+    procured_year            INT,
+
+    -- Organ outcomes (cleaned)
+    outcome_heart            VARCHAR(100),
+    outcome_liver            VARCHAR(100),
+    outcome_kidney_left      VARCHAR(100),
+    outcome_kidney_right     VARCHAR(100),
+    outcome_lung_left        VARCHAR(100),
+    outcome_lung_right       VARCHAR(100),
+    outcome_intestine        VARCHAR(100),
+    outcome_pancreas         VARCHAR(100)
+);
+		-- Defines the clean target table with types that support analytics.
+
+--------------------------------------------------------
+--Silver Table 2: calc_deaths_clean
+--------------------------------------------------------
+
+DROP TABLE IF EXISTS silver.calc_deaths_clean		-- Drops table if it exists
+
+-- Creates clean calc_deaths table with numeric precision.
+
+CREATE TABLE silver.calc_deaths_clean (
+    opo TEXT,
+    year INTEGER,
+    calc_deaths NUMERIC(12, 4),
+    calc_deaths_lb NUMERIC(12, 4),
+    calc_deaths_ub NUMERIC(12, 4)
+);
