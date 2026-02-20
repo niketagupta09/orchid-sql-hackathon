@@ -1,0 +1,360 @@
+/*
+===============================================================================
+Stored Procedure: Load Silver Layer (Bronze -> staging-> Silver)
+===============================================================================
+Script Purpose:
+    This stored procedure performs the ETL (Extract, Transform, Load) process to 
+    populate the 'silver' schema tables from the 'bronze' schema.
+	Actions Performed:
+		- Truncates Silver tables.
+		- Inserts transformed and cleansed data from Bronze into Silver tables.
+
+    ===============================================================================
+CREATE OR REPLACE PROCEDURE silver.load_silver_orchid()
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time   TIMESTAMP;
+BEGIN
+    RAISE NOTICE '================================================';
+    RAISE NOTICE 'Loading Silver Layer (ORCHID) ';
+    RAISE NOTICE '================================================';
+
+    --------------------------------------------------------------------
+    -- Load referrals_clean 
+    --------------------------------------------------------------------
+    start_time := NOW();
+    RAISE NOTICE '>> Truncating Table: silver.referrals_clean';
+    TRUNCATE TABLE silver.referrals_clean;			 			 -- Clear target table before inserting clean rows.
+
+    RAISE NOTICE '>> Inserting Cleaned Data Into: silver.referrals_clean';
+
+    INSERT INTO silver.referrals_clean (
+        patient_id,
+        hospital_id,
+        opo,
+        age,
+        age_over_89_flag,
+        age_band,
+        gender,
+        race,
+        tissue_referral,
+        eye_referral,
+        cause_of_death_opo,
+        cause_of_death_unos,
+        mechanism_of_death,
+        circumstances_of_death,
+        abo_bloodtype,
+        abo_rh,
+        height_in,
+        weight_kg,
+        bmi,
+        brain_death,
+        approached,
+        authorized,
+        procured,
+        transplanted,
+        time_brain_death,
+        time_asystole,
+        time_referred,
+        time_approached,
+        time_authorized,
+        time_procured,
+        hours_to_approach,
+        hours_to_authorization,
+        hours_to_procurement,
+        referral_year,
+        referral_day_of_week,
+        procured_year,
+        outcome_heart,
+        outcome_liver,
+        outcome_kidney_left,
+        outcome_kidney_right,
+        outcome_lung_left,
+        outcome_lung_right,
+        outcome_intestine,
+        outcome_pancreas
+    )
+    SELECT
+        r.patientid,			 -- Map staging patientid to silver patient_id.
+        r.hospitalid,			 -- Map staging hospitalid.
+        r.opo,					 -- Map staging opo.
+
+        ----------------------------------------------------------------
+        -- AGE CLEANING 
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.age ~ '^\d+$' AND r.age::INT BETWEEN 0 AND 120
+                THEN r.age::INT
+            ELSE NULL
+        END AS age,
+					 -- Accept only fully-numeric ages within a plausible range (0–120).
+        			 -- Anything else becomes NULL.
+
+        ----------------------------------------------------------------
+        -- AGE OVER 89 FLAG
+        ----------------------------------------------------------------
+        CASE 
+            WHEN r.age ~ '^\d+$' AND r.age::INT = 100 THEN TRUE
+            ELSE FALSE
+        END AS age_over_89_flag,
+					-- ORCHID convention: 100 indicates "90+" (age masked over 89).
+        		    -- Flag = TRUE only for age=100.
+
+        ----------------------------------------------------------------
+        -- AGE BAND
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.age IS NULL THEN 'Unknown'
+            WHEN r.age::INT = 100 THEN '90+'
+            WHEN r.age::INT BETWEEN 80 AND 89 THEN '80-89'
+            WHEN r.age::INT BETWEEN 70 AND 79 THEN '70-79'
+            WHEN r.age::INT BETWEEN 60 AND 69 THEN '60-69'
+            WHEN r.age::INT BETWEEN 50 AND 59 THEN '50-59'
+            WHEN r.age::INT BETWEEN 40 AND 49 THEN '40-49'
+            WHEN r.age::INT BETWEEN 30 AND 39 THEN '30-39'
+            WHEN r.age::INT BETWEEN 18 AND 29 THEN '18-29'
+            ELSE '0-17'
+        END AS age_band,									-- Buckets patients into age bands for reporting.
+
+        ----------------------------------------------------------------
+        -- GENDER STANDARDIZATION 
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.gender ILIKE 'M%' THEN 'Male'
+            WHEN r.gender ILIKE 'F%' THEN 'Female'
+            ELSE 'Unknown'
+        END AS gender,										-- Standardizes gender based on first letter patterns.
+
+        ----------------------------------------------------------------
+        -- RACE STANDARDIZATION (NO LATINO)
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.race ILIKE '%white%' THEN 'White'
+            WHEN r.race ILIKE '%black%' OR r.race ILIKE '%african%' THEN 'Black or African American'
+            WHEN r.race ILIKE '%asian%' THEN 'Asian'
+            WHEN r.race ILIKE '%american indian%' OR r.race ILIKE '%alaska%' THEN 'American Indian or Alaska Native'
+            WHEN r.race ILIKE '%pacific%' OR r.race ILIKE '%hawaii%' THEN 'Native Hawaiian or Other Pacific Islander'
+            ELSE 'Other'
+        END AS race,											-- Maps race text to standardized categories using pattern matching.
+
+        ----------------------------------------------------------------
+        -- BOOLEAN FLAGS
+        ----------------------------------------------------------------
+        r.tissue_referral,
+        r.eye_referral,
+						-- Already converted to boolean in staging; pass through.
+						
+        ----------------------------------------------------------------
+        -- CAUSE OF DEATH CLEANING
+        ----------------------------------------------------------------
+		
+        COALESCE(
+            REGEXP_REPLACE(TRIM(r.cause_of_death_opo), '\s*-\s*', ' OR ', 'g'),
+            'Not Reported'
+        ) AS cause_of_death_opo,
+					 -- TRIM, then replace hyphen separators " - " with " OR " (global).
+        			 -- COALESCE ensures missing becomes 'Not Reported'.
+
+        COALESCE(
+            REGEXP_REPLACE(TRIM(r.cause_of_death_unos), '\s*-\s*', ' OR ', 'g'),
+            'Not Reported'
+        ) AS cause_of_death_unos,							-- Same cleaning for UNOS cause-of-death.
+
+        COALESCE(
+            REGEXP_REPLACE(TRIM(r.mechanism_of_death), '\s*-\s*', ' OR ', 'g'),
+            'Not Reported'
+        ) AS mechanism_of_death,
+
+        COALESCE(
+            REGEXP_REPLACE(TRIM(r.circumstances_of_death), '\s*-\s*', ' OR ', 'g'),
+            'Not Reported'
+        ) AS circumstances_of_death,				-- Similar normalization for mechanism/circumstances.
+
+        ----------------------------------------------------------------
+        -- BLOOD TYPE CLEANING
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.abo_bloodtype ILIKE 'o%' THEN 'O'
+            WHEN r.abo_bloodtype ILIKE 'a1%' THEN 'A'
+            WHEN r.abo_bloodtype ILIKE 'a2%' THEN 'A'
+            WHEN r.abo_bloodtype ILIKE 'a%'  THEN 'A'
+            WHEN r.abo_bloodtype ILIKE 'ab%' THEN 'AB'
+            WHEN r.abo_bloodtype ILIKE 'b%'  THEN 'B'
+            ELSE 'Unknown'
+        END AS abo_bloodtype,						 -- Normalizes blood type into {O,A,B,AB} else Unknown.
+
+        CASE
+            WHEN r.abo_rh ILIKE '%+%' OR r.abo_rh ILIKE '%pos%' THEN '+'
+            WHEN r.abo_rh ILIKE '%-%' OR r.abo_rh ILIKE '%neg%' THEN '-'
+            ELSE 'Unknown'
+        END AS abo_rh,								-- Normalizes Rh into + / - / Unknown using pattern matching.
+
+        ----------------------------------------------------------------
+        -- HEIGHT CLEANING
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.heightin BETWEEN 30 AND 90 THEN r.heightin
+            ELSE NULL
+        END AS height_in,							-- Keeps only plausible heights in inches (30–90), else NULL.
+
+        ----------------------------------------------------------------
+        -- WEIGHT CLEANING
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.weightkg BETWEEN 2 AND 300 THEN r.weightkg
+            ELSE NULL
+        END AS weight_kg,							-- Keeps only plausible weights in kg (2–300), else NULL.
+
+
+        ----------------------------------------------------------------
+        -- BMI
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.heightin BETWEEN 30 AND 90 AND r.weightkg BETWEEN 2 AND 300
+                THEN ROUND((r.weightkg / ((r.heightin * 0.0254)^2))::NUMERIC, 2)
+            ELSE NULL
+        END AS bmi,
+			-- BMI formula:
+        	-- height_in → meters via *0.0254, square it, weight_kg / meters^2.
+       		-- ROUND to 2 decimals.
+			   
+        ----------------------------------------------------------------
+        -- PROCESS FLAGS
+        ----------------------------------------------------------------
+        r.brain_death,
+        r.approached,
+        r.authorized,
+        r.procured,
+        r.transplanted,								  -- Pass-through boolean process flags.
+
+        ----------------------------------------------------------------
+        -- KEEP ORIGINAL SHIFTED TIMESTAMPS
+        ----------------------------------------------------------------
+        r.time_brain_death,
+        r.time_asystole,
+        r.time_referred,
+        r.time_approached,
+        r.time_authorized,
+        r.time_procured,								 -- Keeps timestamps as-is from staging (already casted to TIMESTAMP).
+
+        ----------------------------------------------------------------
+        --  RELATIVE TIME METRICS WITH ORDERING CHECKS
+        ----------------------------------------------------------------
+
+        -- Hours from referral → approach
+        CASE
+            WHEN r.time_referred IS NOT NULL
+                 AND r.time_approached IS NOT NULL
+                 AND r.time_approached >= r.time_referred
+            THEN EXTRACT(EPOCH FROM (r.time_approached - r.time_referred)) / 3600
+            ELSE NULL
+        END AS hours_to_approach,
+
+        -- Hours from approach → authorization
+        CASE
+            WHEN r.time_approached IS NOT NULL
+                 AND r.time_authorized IS NOT NULL
+                 AND r.time_authorized >= r.time_approached
+            THEN EXTRACT(EPOCH FROM (r.time_authorized - r.time_approached)) / 3600
+            ELSE NULL
+        END AS hours_to_authorization,
+
+        -- Hours from authorization → procurement
+        CASE
+            WHEN r.time_authorized IS NOT NULL
+                 AND r.time_procured IS NOT NULL
+                 AND r.time_procured >= r.time_authorized
+            THEN EXTRACT(EPOCH FROM (r.time_procured - r.time_authorized)) / 3600
+            ELSE NULL
+        END AS hours_to_procurement,
+
+        ----------------------------------------------------------------
+        -- YEAR CLEANING
+        ----------------------------------------------------------------
+        CASE
+            WHEN r.referral_year BETWEEN 1900 AND 2100 THEN r.referral_year::INT
+            ELSE NULL
+        END AS referral_year,
+
+        CASE
+            WHEN r.referral_dayofweek ILIKE 'mon%' THEN 'Monday'
+            WHEN r.referral_dayofweek ILIKE 'tue%' THEN 'Tuesday'
+            WHEN r.referral_dayofweek ILIKE 'wed%' THEN 'Wednesday'
+            WHEN r.referral_dayofweek ILIKE 'thu%' THEN 'Thursday'
+            WHEN r.referral_dayofweek ILIKE 'fri%' THEN 'Friday'
+            WHEN r.referral_dayofweek ILIKE 'sat%' THEN 'Saturday'
+            WHEN r.referral_dayofweek ILIKE 'sun%' THEN 'Sunday'
+            ELSE 'Unknown'
+        END AS referral_day_of_week,
+
+        CASE
+            WHEN r.procured_year BETWEEN 1900 AND 2100 THEN r.procured_year::INT
+            ELSE NULL
+        END AS procured_year,
+
+        ----------------------------------------------------------------
+        -- OUTCOME CLEANING
+        ----------------------------------------------------------------
+        COALESCE(r.outcome_heart,      'Not Recovered') AS outcome_heart,
+        COALESCE(r.outcome_liver,      'Not Recovered') AS outcome_liver,
+        COALESCE(r.outcome_kidney_left,'Not Recovered') AS outcome_kidney_left,
+        COALESCE(r.outcome_kidney_right,'Not Recovered') AS outcome_kidney_right,
+        COALESCE(r.outcome_lung_left,  'Not Recovered') AS outcome_lung_left,
+        COALESCE(r.outcome_lung_right, 'Not Recovered') AS outcome_lung_right,
+        COALESCE(r.outcome_intestine,  'Not Recovered') AS outcome_intestine,
+        COALESCE(r.outcome_pancreas,   'Not Recovered') AS outcome_pancreas
+
+    FROM staging.referrals_stage r;					 -- Source is staging table (already trimmed/casted).
+
+    end_time := NOW();
+    RAISE NOTICE '>> referrals_clean Load Duration: % seconds',
+        EXTRACT(SECOND FROM (end_time - start_time));			-- Logs load duration in seconds (SECOND extracts seconds portion of interval).
+
+    --------------------------------------------------------------------
+    -- Load calc_deaths_clean 
+    --------------------------------------------------------------------
+    start_time := NOW();
+    RAISE NOTICE '>> Truncating Table: silver.calc_deaths_clean';
+    TRUNCATE TABLE silver.calc_deaths_clean;
+
+    RAISE NOTICE '>> Inserting Cleaned Data Into: silver.calc_deaths_clean';
+
+    INSERT INTO silver.calc_deaths_clean (
+        opo, year, calc_deaths, calc_deaths_lb, calc_deaths_ub
+    )
+    SELECT
+        c.opo,
+        CASE WHEN c.year BETWEEN 1900 AND 2100 THEN c.year::INT ELSE NULL END AS year,
+        CASE WHEN c.calc_deaths    >= 0 THEN c.calc_deaths::INT    ELSE NULL END,
+        CASE WHEN c.calc_deaths_lb >= 0 THEN c.calc_deaths_lb::INT ELSE NULL END,
+        CASE WHEN c.calc_deaths_ub >= 0 THEN c.calc_deaths_ub::INT ELSE NULL END
+    FROM staging.calc_deaths_stage c;											-- Source is staging table.
+
+    end_time := NOW();
+    RAISE NOTICE '>> calc_deaths_clean Load Duration: % seconds',
+        EXTRACT(SECOND FROM (end_time - start_time));					  -- Logs duration.
+
+    --------------------------------------------------------------------
+    -- Finish
+    --------------------------------------------------------------------
+    RAISE NOTICE '==========================================';
+    RAISE NOTICE 'Silver Layer Load Completed Successfully ';
+    RAISE NOTICE '==========================================';
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE '==========================================';
+        RAISE NOTICE 'ERROR OCCURRED DURING SILVER LAYER LOAD';
+        RAISE NOTICE 'Error Message: %', SQLERRM;
+        RAISE NOTICE '==========================================';
+END;
+$$;													-- End of Silver load procedure.
+
+CALL silver.load_silver_orchid();					-- Execute Silver layer procedure.
+
+
+SELECT * FROM silver.referrals_clean;				-- Validation query for Silver table.
+
+
