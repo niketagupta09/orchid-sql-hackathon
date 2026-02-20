@@ -1,1 +1,101 @@
+/*
+===============================================================================
+Stored Procedure: Load Bronze Layer (Source -> Bronze)
+===============================================================================
+Script Purpose:
+    This stored procedure loads data into the 'bronze' schema from external CSV files. 
+    It performs the following actions:
+    - Truncates the bronze tables before loading data.
+
+-- Defines a stored procedure (not a function) that loads raw data into Bronze.
+-- Variables start_time/end_time track duration for logging.
+===========================================================================
+
+CREATE OR REPLACE PROCEDURE bronze.load_bronze_orchid()
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+BEGIN
+
+-- Logs progress messages to the console/output.
+
+RAISE NOTICE '===================================';
+RAISE NOTICE 'LOADING ORCHID BRONZE LAYER';
+RAISE NOTICE '===================================';
+
+-------------------------------------------------
+-- REFERRALS
+-------------------------------------------------
+-- Section header for loading referrals into bronze.referrals_raw.
+
+start_time := NOW();		-- Capture current timestamp at start of referrals load.
+
+RAISE NOTICE 'Truncating bronze.referrals_raw';
+TRUNCATE TABLE bronze.referrals_raw;
+
+-- TRUNCATE removes all rows quickly (faster than DELETE).
+-- This makes the load idempotent (safe to re-run) because table is emptied first.
+
+RAISE NOTICE 'Loading bronze.referrals_raw';
+
+-- Inserts all rows from source table "referrals" into bronze.referrals_raw.
+-- Keeps raw values exactly as-is (no cleaning here).
+
+INSERT INTO bronze.referrals_raw
+SELECT *
+FROM referrals;
+
+end_time := NOW();			-- Capture current timestamp at end of referrals load.
+
+RAISE NOTICE 'Load duration (referrals): % seconds',		-- Logs duration in seconds:
+    EXTRACT(EPOCH FROM (end_time - start_time));			--EXTRACT(EPOCH FROM interval) converts the interval into total seconds.
+
+-------------------------------------------------
+-- CALC_DEATHS
+-------------------------------------------------
+
+-- Section header for loading calc_deaths into bronze.calc_deaths_raw.
+
+start_time := NOW();			-- Start timing for calc_deaths load.
+
+-- Clear the raw table for a fresh reload.
+
+RAISE NOTICE 'Truncating bronze.calc_deaths_raw';
+TRUNCATE TABLE bronze.calc_deaths_raw;
+
+RAISE NOTICE 'Loading bronze.calc_deaths_raw';
+
+-- Inserts all rows from source "calc_deaths" into bronze.calc_deaths_raw.
+
+INSERT INTO bronze.calc_deaths_raw
+SELECT *
+FROM calc_deaths;
+
+end_time := NOW();				-- End timing for calc_deaths load.
+
+RAISE NOTICE 'Load duration (calc_deaths): % seconds',			-- Logs load duration in seconds.
+    EXTRACT(EPOCH FROM (end_time - start_time));
+
+-- Final completion messages.
+
+RAISE NOTICE '===================================';
+RAISE NOTICE 'BRONZE LOAD COMPLETED SUCCESSFULLY';
+RAISE NOTICE '===================================';
+
+-- Exception handler:
+-- If ANY error happens in the procedure, it prints the error message (SQLERRM).
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE NOTICE 'Error occurred: %', SQLERRM;
+END;
+$$;						-- End of stored procedure definition.
+
+CALL bronze.load_bronze_orchid();			-- Executes the Bronze load procedure.
+
+
+SELECT *
+FROM bronze.referrals_raw;					-- Quick validation query to view loaded raw referrals.
 
