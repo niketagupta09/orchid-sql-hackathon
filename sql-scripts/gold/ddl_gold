@@ -1,0 +1,58 @@
+
+/* =============================================================================
+LAYER 4: GOLD (DIMENSIONAL MODEL)
+- Create gold schema
+- Build dimensions and facts
+- Procedure to truncate + reload dims/facts from Silver
+============================================================================= */
+
+CREATE SCHEMA gold;					-- Creates gold schema.
+
+
+
+-- Patient dimension: one row per patient_id with demographic and body metrics.
+
+CREATE TABLE gold.dim_patient (
+    patient_id VARCHAR(100) PRIMARY KEY,
+    age INT,
+    age_over_89_flag BOOLEAN,
+    age_band VARCHAR(50),
+    gender VARCHAR(50),
+    race VARCHAR(50),
+    height_in NUMERIC(10,2),
+    weight_kg NUMERIC(10,2),
+    bmi NUMERIC(10,2)
+);
+
+
+-- Hospital dimension: links hospitals to OPO.
+
+CREATE TABLE gold.dim_hospital (
+    hospital_id VARCHAR(100) PRIMARY KEY,
+    opo VARCHAR(100)
+);
+
+
+-- Cause dimension: surrogate key cause_id for unique cause combinations.
+
+CREATE TABLE gold.dim_cause_of_death (
+    cause_id SERIAL PRIMARY KEY,
+    cause_of_death_opo VARCHAR(200),
+    cause_of_death_unos VARCHAR(200),
+    mechanism_of_death VARCHAR(200),
+    circumstances_of_death VARCHAR(200)
+);
+
+-- Blood type dimension: surrogate key bloodtype_id.
+
+CREATE TABLE gold.dim_blood_type (
+    bloodtype_id SERIAL PRIMARY KEY,
+    abo_bloodtype VARCHAR(50),
+    abo_rh VARCHAR(10)
+);
+
+-- OPO dimension: one row per opo (natural key).
+
+CREATE TABLE gold.dim_opo (
+    opo VARCHAR(100) PRIMARY KEY
+);
