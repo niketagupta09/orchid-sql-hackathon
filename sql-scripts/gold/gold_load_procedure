@@ -1,0 +1,173 @@
+/*
+===============================================================================
+This stored procedure builds the Gold Layer of the Orchid Data Warehouse using a full refresh strategy.
+The procedure transforms cleaned data from the Silver Layer into analytics-ready dimension and fact tables, 
+enabling structured reporting and clinical performance analysis.
+The procedure begins by:
+Truncating all fact tables (with RESTART IDENTITY CASCADE)
+Truncating all dimension tables
+Preventing foreign key violations by loading dimensions before facts
+Rebuilding the Gold layer from scratch for a clean, consistent load
+===============================================================================
+*/
+
+
+CREATE OR REPLACE PROCEDURE gold.load_gold_orchid()
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE NOTICE '==============================================';
+    RAISE NOTICE 'Starting GOLD Layer Load (with TRUNCATE)';
+    RAISE NOTICE '==============================================';
+
+    --------------------------------------------------------------------
+    -- TRUNCATE FACT TABLES FIRST (to avoid FK violations)
+    --------------------------------------------------------------------
+    TRUNCATE TABLE gold.fact_referral_funnel RESTART IDENTITY CASCADE;
+    TRUNCATE TABLE gold.fact_organ_outcomes RESTART IDENTITY CASCADE;
+    TRUNCATE TABLE gold.fact_calc_deaths RESTART IDENTITY CASCADE;
+
+    --------------------------------------------------------------------
+    -- TRUNCATE DIMENSIONS (optional but recommended for clean rebuild)
+    --------------------------------------------------------------------
+    TRUNCATE TABLE gold.dim_patient CASCADE;
+    TRUNCATE TABLE gold.dim_hospital CASCADE;
+    TRUNCATE TABLE gold.dim_cause_of_death CASCADE;
+    TRUNCATE TABLE gold.dim_blood_type CASCADE;
+    TRUNCATE TABLE gold.dim_opo CASCADE;
+
+    --------------------------------------------------------------------
+    -- 1. Load dim_patient
+    --------------------------------------------------------------------
+    INSERT INTO gold.dim_patient (
+        patient_id, age, age_over_89_flag, age_band, gender, race,
+        height_in, weight_kg, bmi
+    )
+    SELECT DISTINCT
+        patient_id, age, age_over_89_flag, age_band, gender, race,
+        height_in, weight_kg, bmi
+    FROM silver.referrals_clean;
+
+    --------------------------------------------------------------------
+    -- 2. Load dim_hospital
+    --------------------------------------------------------------------
+    INSERT INTO gold.dim_hospital (hospital_id, opo)
+    SELECT DISTINCT hospital_id, opo
+    FROM silver.referrals_clean;
+
+    --------------------------------------------------------------------
+    -- 3. Load dim_cause_of_death
+    --------------------------------------------------------------------
+    INSERT INTO gold.dim_cause_of_death (
+        cause_of_death_opo, cause_of_death_unos,
+        mechanism_of_death, circumstances_of_death
+    )
+    SELECT DISTINCT
+        cause_of_death_opo, cause_of_death_unos,
+        mechanism_of_death, circumstances_of_death
+    FROM silver.referrals_clean;
+
+    --------------------------------------------------------------------
+    -- 4. Load dim_blood_type
+    --------------------------------------------------------------------
+    INSERT INTO gold.dim_blood_type (abo_bloodtype, abo_rh)
+    SELECT DISTINCT abo_bloodtype, abo_rh
+    FROM silver.referrals_clean;
+
+    --------------------------------------------------------------------
+    -- 5. Load dim_opo
+    --------------------------------------------------------------------
+    INSERT INTO gold.dim_opo (opo)
+    SELECT DISTINCT opo
+    FROM silver.referrals_clean;
+
+    --------------------------------------------------------------------
+    -- 6. Load fact_referral_funnel
+    --------------------------------------------------------------------
+    INSERT INTO gold.fact_referral_funnel (
+        patient_id, hospital_id, cause_id, bloodtype_id,
+        tissue_referral, eye_referral,
+        brain_death, approached, authorized, procured, transplanted,
+        hours_to_approach, hours_to_authorization, hours_to_procurement,
+        referral_year, referral_day_of_week, procured_year
+    )
+    SELECT
+        r.patient_id,
+        r.hospital_id,
+
+        c.cause_id,
+        b.bloodtype_id,
+
+        r.tissue_referral,
+        r.eye_referral,
+        r.brain_death,
+        r.approached,
+        r.authorized,
+        r.procured,
+        r.transplanted,
+
+        r.hours_to_approach,
+        r.hours_to_authorization,
+        r.hours_to_procurement,
+
+        r.referral_year,
+        r.referral_day_of_week,
+        r.procured_year
+    FROM silver.referrals_clean r
+    LEFT JOIN gold.dim_cause_of_death c
+        ON r.cause_of_death_opo = c.cause_of_death_opo
+       AND r.cause_of_death_unos = c.cause_of_death_unos
+       AND r.mechanism_of_death = c.mechanism_of_death
+       AND r.circumstances_of_death = c.circumstances_of_death
+    LEFT JOIN gold.dim_blood_type b
+        ON r.abo_bloodtype = b.abo_bloodtype
+       AND r.abo_rh = b.abo_rh;
+
+    --------------------------------------------------------------------
+    -- 7. Load fact_organ_outcomes
+    --------------------------------------------------------------------
+    INSERT INTO gold.fact_organ_outcomes (
+        patient_id, organ_type, outcome, procured, transplanted
+    )
+    SELECT patient_id, 'Heart', outcome_heart, procured, transplanted
+    FROM silver.referrals_clean
+    UNION ALL
+    SELECT patient_id, 'Liver', outcome_liver, procured, transplanted
+    FROM silver.referrals_clean
+    UNION ALL
+    SELECT patient_id, 'Kidney_Left', outcome_kidney_left, procured, transplanted
+    FROM silver.referrals_clean
+    UNION ALL
+    SELECT patient_id, 'Kidney_Right', outcome_kidney_right, procured, transplanted
+    FROM silver.referrals_clean
+    UNION ALL
+    SELECT patient_id, 'Lung_Left', outcome_lung_left, procured, transplanted
+    FROM silver.referrals_clean
+    UNION ALL
+    SELECT patient_id, 'Lung_Right', outcome_lung_right, procured, transplanted
+    FROM silver.referrals_clean
+    UNION ALL
+    SELECT patient_id, 'Intestine', outcome_intestine, procured, transplanted
+    FROM silver.referrals_clean
+    UNION ALL
+    SELECT patient_id, 'Pancreas', outcome_pancreas, procured, transplanted
+    FROM silver.referrals_clean;
+
+    --------------------------------------------------------------------
+    -- 8. Load fact_calc_deaths
+    --------------------------------------------------------------------
+    INSERT INTO gold.fact_calc_deaths (
+        opo, year, calc_deaths, calc_deaths_lb, calc_deaths_ub
+    )
+    SELECT opo, year, calc_deaths, calc_deaths_lb, calc_deaths_ub
+    FROM silver.calc_deaths_clean;
+
+    --------------------------------------------------------------------
+    -- Finish
+    --------------------------------------------------------------------
+    RAISE NOTICE '==============================================';
+    RAISE NOTICE 'GOLD Layer Load Completed Successfully (Clean Run)';
+    RAISE NOTICE '==============================================';
+
+END;
+$$;						-- End Gold load procedure.
